@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="es">
 <head>
 <meta charset="UTF-8">
@@ -136,7 +135,23 @@ body{font-family:Georgia,'Times New Roman',serif;background:#0F1117;color:#F0EDE
   <div class="content" id="content"></div>
 </div>
 
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-database-compat.js"></script>
 <script>
+// ─── FIREBASE ─────────────────────────────────────────────
+const firebaseConfig = {
+  apiKey: "AIzaSyDI2vdwTHZxAbfw1HRim4S3QsH1yEygHtw",
+  authDomain: "yo-me-voy-reservas.firebaseapp.com",
+  databaseURL: "https://yo-me-voy-reservas-default-rtdb.europe-west1.firebasedatabase.app",
+  projectId: "yo-me-voy-reservas",
+  storageBucket: "yo-me-voy-reservas.firebasestorage.app",
+  messagingSenderId: "250466590178",
+  appId: "1:250466590178:web:e1d916ce49be57bd592dbb"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.database();
+const salesRef = db.ref("sales");
+
 // ─── TRIPS DATA ───────────────────────────────────────────
 var TRIPS=[
   {id:1,dest:"Málaga — Costa del Sol",date:"2025-04-04",day:"Sábado",color:"#E84545",prices:{adulto:55,nino:45},senalMin:20,salidas:["Puente de Vallecas 01:30","Atocha 01:45","Plaza Elíptica 02:00"],regreso:"01:00 desde Málaga",info:"Semana Santa · Costa del Sol"},
@@ -152,9 +167,16 @@ var TRIPS=[
 var BUSES=[{id:1,name:"Bus 1",seats:80},{id:2,name:"Bus 2",seats:55}];
 var PAYMENTS=[{id:"Efectivo",icon:"💵"},{id:"Tarjeta",icon:"💳"},{id:"Bizum",icon:"📱"},{id:"Transferencia",icon:"🏦"}];
 
-// ─── STATE (memoria en sesión) ────────────────────────────
+// ─── STATE ────────────────────────────────────────────────
 var sales={};
 var nextId=1;
+
+// ─── FIREBASE SYNC ────────────────────────────────────────
+salesRef.on("value", function(snap){
+  sales = snap.val() || {};
+  updateRevenue();
+  render();
+}, function(err){ console.warn("Firebase error", err); });
 var currentView="dashboard";
 var selTrip=null,selBus=null,selSeat=null;
 var selPayment="Bizum",selPriceType="adulto";
@@ -324,19 +346,16 @@ function calcMet(precio){var s=parseFloat(document.getElementById("fSenal").valu
 function doSelPT(type){var v={};["fClient","fPhone","fEmail","fSenal"].forEach(function(id){var el=document.getElementById(id);if(el)v[id]=el.value;});selPriceType=type;render();Object.keys(v).forEach(function(id){var el=document.getElementById(id);if(el)el.value=v[id];});var p=selPriceType==="nino"&&selTrip.prices.nino?selTrip.prices.nino:selTrip.prices.adulto;calcMet(p);}
 function doSelPay(p){var v={};["fClient","fPhone","fEmail","fSenal"].forEach(function(id){var el=document.getElementById(id);if(el)v[id]=el.value;});selPayment=p;render();Object.keys(v).forEach(function(id){var el=document.getElementById(id);if(el)el.value=v[id];});var precio=selPriceType==="nino"&&selTrip.prices.nino?selTrip.prices.nino:selTrip.prices.adulto;calcMet(precio);}
 
-async function confirmSale(precio){
+function confirmSale(precio){
   var client=document.getElementById("fClient").value.trim();
   var phone=document.getElementById("fPhone").value.trim();
   var email=document.getElementById("fEmail").value.trim();
   var senal=parseFloat(document.getElementById("fSenal").value)||0;
   if(!client||!phone){toast("Completa nombre y teléfono","error");return;}
   var metalico=Math.max(0,precio-senal);
-  var key="R"+(nextId++);
-  sales[key]={tripId:selTrip.id,busId:selBus.id,seat:selSeat,client:client,phone:phone,email:email,payment:selPayment,senal:senal,metalico:metalico,total:precio,priceType:selPriceType,status:senal>=precio?"Pagado":"Pendiente",date:new Date().toISOString().split("T")[0],ts:Date.now()};
-  await saveData();
-  toast("¡Reserva guardada! ✅");
-  selSeat=null;selTrip=null;selBus=null;selPriceType="adulto";
-  showView("dashboard");
+  salesRef.push({tripId:selTrip.id,busId:selBus.id,seat:selSeat,client:client,phone:phone,email:email,payment:selPayment,senal:senal,metalico:metalico,total:precio,priceType:selPriceType,status:senal>=precio?"Pagado":"Pendiente",date:new Date().toISOString().split("T")[0],ts:Date.now()})
+  .then(function(){ toast("¡Reserva guardada! ✅"); selSeat=null;selTrip=null;selBus=null;selPriceType="adulto"; showView("dashboard"); })
+  .catch(function(){ toast("Error al guardar","error"); });
 }
 
 // ─── SALES LIST ───────────────────────────────────────────
@@ -391,28 +410,14 @@ function renderDetail(){
   }
   return html;
 }
-async function updStatus(key,status){sales[key].status=status;await saveData();toast("Estado: "+status);render();}
-
-// ─── STORAGE ──────────────────────────────────────────────
-async function saveData(){
-  try{
-    await window.storage.set('ymv-sales',JSON.stringify(sales));
-    await window.storage.set('ymv-nextid',String(nextId));
-  }catch(e){console.warn('Storage save error',e);}
-}
-async function loadData(){
-  try{
-    var r=await window.storage.get('ymv-sales');
-    if(r&&r.value)sales=JSON.parse(r.value);
-    var r2=await window.storage.get('ymv-nextid');
-    if(r2&&r2.value)nextId=parseInt(r2.value)||1;
-  }catch(e){sales={};nextId=1;}
+function updStatus(key,status){
+  db.ref("sales/"+key).update({status:status}).then(function(){ toast("Estado: "+status); }).catch(function(){ toast("Error","error"); });
 }
 
 // ─── INIT ─────────────────────────────────────────────────
 buildTripsList();
-loadData().then(function(){render();updateRevenue();});
+render();
+updateRevenue();
 </script>
-
 </body>
 </html>
